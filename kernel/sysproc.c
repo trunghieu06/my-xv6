@@ -91,3 +91,8 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int sys_hello(void) {
+    printf("Hello, this is my first system call!!\n");
+    return 0;
+}

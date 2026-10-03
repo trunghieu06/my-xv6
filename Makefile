@@ -199,8 +199,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-
-
+	$U/_testhello\
 
 
 ifeq ($(LAB),syscall)
@@ -380,3 +379,4 @@ zipball: clean submit-check
 	git archive --verbose --format zip --output lab.zip HEAD
 
 .PHONY: zipball clean grade submit-check
+
