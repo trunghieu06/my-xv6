@@ -51,7 +51,7 @@ OBJS += \
 endif
 
 
-ifeq ($(LAB),net)
+ifeq ($(LAB),n:)
 OBJS += \
 	$K/e1000.o \
 	$K/net.o \
@@ -168,8 +168,13 @@ $U/_forktest: $U/forktest.o $(ULIB)
 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
 
+# original mkfs
+# mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
+# 	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+
+# new mkfs
 mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
-	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+	/opt/homebrew/opt/llvm/bin/clang $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
