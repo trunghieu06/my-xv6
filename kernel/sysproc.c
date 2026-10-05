@@ -91,3 +91,18 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_hello(void) {
+  printf("Tui dep trai\n");
+  return 0;
+}
+
+uint64 
+sys_trace(void) {
+  // store trace_mask to process
+  int trace_mask;
+  argint(0, &trace_mask);
+  myproc()->trace_mask = trace_mask;
+  return 0;
+}
