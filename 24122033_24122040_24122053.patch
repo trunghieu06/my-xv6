@@ -1,0 +1,533 @@
+diff --git a/Makefile b/Makefile
+index 74e454f..c6b1e1f 100644
+--- a/Makefile
++++ b/Makefile
+@@ -168,9 +168,14 @@ $U/_forktest: $U/forktest.o $(ULIB)
+ 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
+ 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
+ 
++# original mkfs
+ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
+ 	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+ 
++# new mkfs
++# mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
++# 	/opt/homebrew/opt/llvm/bin/clang $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
++
+ # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
+ # that disk image changes after first build are persistent until clean.  More
+ # details:
+@@ -194,6 +199,8 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_testhello\
++	$U/_trace\
+ 
+ 
+ 
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..7ef75d0
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1 @@
++# my-xv6
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 130d9ce..8691ff7 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -124,6 +124,7 @@ allocproc(void)
+ found:
+   p->pid = allocpid();
+   p->state = USED;
++  p->trace_mask = 0;
+ 
+   // Allocate a trapframe page.
+   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+@@ -168,6 +169,7 @@ freeproc(struct proc *p)
+   p->chan = 0;
+   p->killed = 0;
+   p->xstate = 0;
++  p->trace_mask = 0;
+   p->state = UNUSED;
+ }
+ 
+@@ -302,6 +304,8 @@ fork(void)
+   // Cause fork to return 0 in the child.
+   np->trapframe->a0 = 0;
+ 
++  np->trace_mask = p->trace_mask;
++
+   // increment reference counts on open file descriptors.
+   for(i = 0; i < NOFILE; i++)
+     if(p->ofile[i])
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..3644472 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,7 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++  // mask of trace function
++  int trace_mask;
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..15f3122 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_hello(void);
++extern uint64 sys_trace(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +128,35 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_hello]   sys_hello,
++[SYS_trace]   sys_trace,
++};
++
++// names of system call
++static char (*sys_names[]) = {
++[SYS_fork]    "fork",
++[SYS_exit]    "exit",
++[SYS_wait]    "wait",
++[SYS_pipe]    "pipe",
++[SYS_read]    "read",
++[SYS_kill]    "kill",
++[SYS_exec]    "exec",
++[SYS_fstat]   "fstat",
++[SYS_chdir]   "chdir",
++[SYS_dup]     "dup",
++[SYS_getpid]  "getpid",
++[SYS_sbrk]    "sbrk",
++[SYS_sleep]   "sleep",
++[SYS_uptime]  "uptime",
++[SYS_open]    "open",
++[SYS_write]   "write",
++[SYS_mknod]   "mknod",
++[SYS_unlink]  "unlink",
++[SYS_link]    "link",
++[SYS_mkdir]   "mkdir",
++[SYS_close]   "close",
++[SYS_hello]   "hello",
++[SYS_trace]   "trace",
+ };
+ 
+ void
+@@ -133,12 +164,17 @@ syscall(void)
+ {
+   int num;
+   struct proc *p = myproc();
+-
++  // printf("%d\n", p->trace_mask);
+   num = p->trapframe->a7;
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+     // Use num to lookup the system call function for num, call it,
+     // and store its return value in p->trapframe->a0
+     p->trapframe->a0 = syscalls[num]();
++    int trace_mask = p->trace_mask;
++    int res = p->trapframe->a0;
++    if (trace_mask & (1 << num)) {
++      printf("syscall %s -> %d\n", sys_names[num], res);
++    }
+   } else {
+     printf("%d %s: unknown sys call %d\n",
+             p->pid, p->name, num);
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..fdeec82 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_hello  22
++#define SYS_trace  23
+\ No newline at end of file
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..dba8086 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -91,3 +91,18 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++uint64
++sys_hello(void) {
++  printf("Tui dep trai\n");
++  return 0;
++}
++
++uint64 
++sys_trace(void) {
++  // store trace_mask to process
++  int trace_mask;
++  argint(0, &trace_mask);
++  myproc()->trace_mask = trace_mask;
++  return 0;
++}
+\ No newline at end of file
+diff --git a/submission.diff b/submission.diff
+new file mode 100644
+index 0000000..0ad2826
+--- /dev/null
++++ b/submission.diff
+@@ -0,0 +1,268 @@
++diff --git a/Makefile b/Makefile
++index 74e454f..427f673 100644
++--- a/Makefile
+++++ b/Makefile
++@@ -51,7 +51,7 @@ OBJS += \
++ endif
++ 
++ 
++-ifeq ($(LAB),net)
+++ifeq ($(LAB),n:)
++ OBJS += \
++ 	$K/e1000.o \
++ 	$K/net.o \
++@@ -168,8 +168,13 @@ $U/_forktest: $U/forktest.o $(ULIB)
++ 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
++ 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
++ 
+++# original mkfs
+++# mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
+++# 	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+++
+++# new mkfs
++ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
++-	gcc $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
+++	/opt/homebrew/opt/llvm/bin/clang $(XCFLAGS) -Werror -Wall -I. -o mkfs/mkfs mkfs/mkfs.c
++ 
++ # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
++ # that disk image changes after first build are persistent until clean.  More
++@@ -194,6 +199,8 @@ UPROGS=\
++ 	$U/_grind\
++ 	$U/_wc\
++ 	$U/_zombie\
+++	$U/_testhello\
+++	$U/_trace\
++ 
++ 
++ 
++diff --git a/README.md b/README.md
++new file mode 100644
++index 0000000..7ef75d0
++--- /dev/null
+++++ b/README.md
++@@ -0,0 +1 @@
+++# my-xv6
++diff --git a/kernel/proc.c b/kernel/proc.c
++index 130d9ce..8691ff7 100644
++--- a/kernel/proc.c
+++++ b/kernel/proc.c
++@@ -124,6 +124,7 @@ allocproc(void)
++ found:
++   p->pid = allocpid();
++   p->state = USED;
+++  p->trace_mask = 0;
++ 
++   // Allocate a trapframe page.
++   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
++@@ -168,6 +169,7 @@ freeproc(struct proc *p)
++   p->chan = 0;
++   p->killed = 0;
++   p->xstate = 0;
+++  p->trace_mask = 0;
++   p->state = UNUSED;
++ }
++ 
++@@ -302,6 +304,8 @@ fork(void)
++   // Cause fork to return 0 in the child.
++   np->trapframe->a0 = 0;
++ 
+++  np->trace_mask = p->trace_mask;
+++
++   // increment reference counts on open file descriptors.
++   for(i = 0; i < NOFILE; i++)
++     if(p->ofile[i])
++diff --git a/kernel/proc.h b/kernel/proc.h
++index d021857..3644472 100644
++--- a/kernel/proc.h
+++++ b/kernel/proc.h
++@@ -104,4 +104,7 @@ struct proc {
++   struct file *ofile[NOFILE];  // Open files
++   struct inode *cwd;           // Current directory
++   char name[16];               // Process name (debugging)
+++
+++  // mask of trace function
+++  int trace_mask;
++ };
++diff --git a/kernel/syscall.c b/kernel/syscall.c
++index ed65409..15f3122 100644
++--- a/kernel/syscall.c
+++++ b/kernel/syscall.c
++@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
++ extern uint64 sys_link(void);
++ extern uint64 sys_mkdir(void);
++ extern uint64 sys_close(void);
+++extern uint64 sys_hello(void);
+++extern uint64 sys_trace(void);
++ 
++ // An array mapping syscall numbers from syscall.h
++ // to the function that handles the system call.
++@@ -126,6 +128,35 @@ static uint64 (*syscalls[])(void) = {
++ [SYS_link]    sys_link,
++ [SYS_mkdir]   sys_mkdir,
++ [SYS_close]   sys_close,
+++[SYS_hello]   sys_hello,
+++[SYS_trace]   sys_trace,
+++};
+++
+++// names of system call
+++static char (*sys_names[]) = {
+++[SYS_fork]    "fork",
+++[SYS_exit]    "exit",
+++[SYS_wait]    "wait",
+++[SYS_pipe]    "pipe",
+++[SYS_read]    "read",
+++[SYS_kill]    "kill",
+++[SYS_exec]    "exec",
+++[SYS_fstat]   "fstat",
+++[SYS_chdir]   "chdir",
+++[SYS_dup]     "dup",
+++[SYS_getpid]  "getpid",
+++[SYS_sbrk]    "sbrk",
+++[SYS_sleep]   "sleep",
+++[SYS_uptime]  "uptime",
+++[SYS_open]    "open",
+++[SYS_write]   "write",
+++[SYS_mknod]   "mknod",
+++[SYS_unlink]  "unlink",
+++[SYS_link]    "link",
+++[SYS_mkdir]   "mkdir",
+++[SYS_close]   "close",
+++[SYS_hello]   "hello",
+++[SYS_trace]   "trace",
++ };
++ 
++ void
++@@ -133,12 +164,17 @@ syscall(void)
++ {
++   int num;
++   struct proc *p = myproc();
++-
+++  // printf("%d\n", p->trace_mask);
++   num = p->trapframe->a7;
++   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
++     // Use num to lookup the system call function for num, call it,
++     // and store its return value in p->trapframe->a0
++     p->trapframe->a0 = syscalls[num]();
+++    int trace_mask = p->trace_mask;
+++    int res = p->trapframe->a0;
+++    if (trace_mask & (1 << num)) {
+++      printf("syscall %s -> %d\n", sys_names[num], res);
+++    }
++   } else {
++     printf("%d %s: unknown sys call %d\n",
++             p->pid, p->name, num);
++diff --git a/kernel/syscall.h b/kernel/syscall.h
++index bc5f356..fdeec82 100644
++--- a/kernel/syscall.h
+++++ b/kernel/syscall.h
++@@ -20,3 +20,5 @@
++ #define SYS_link   19
++ #define SYS_mkdir  20
++ #define SYS_close  21
+++#define SYS_hello  22
+++#define SYS_trace  23
++\ No newline at end of file
++diff --git a/kernel/sysproc.c b/kernel/sysproc.c
++index 3b4d5bd..dba8086 100644
++--- a/kernel/sysproc.c
+++++ b/kernel/sysproc.c
++@@ -91,3 +91,18 @@ sys_uptime(void)
++   release(&tickslock);
++   return xticks;
++ }
+++
+++uint64
+++sys_hello(void) {
+++  printf("Tui dep trai\n");
+++  return 0;
+++}
+++
+++uint64 
+++sys_trace(void) {
+++  // store trace_mask to process
+++  int trace_mask;
+++  argint(0, &trace_mask);
+++  myproc()->trace_mask = trace_mask;
+++  return 0;
+++}
++\ No newline at end of file
++diff --git a/user/testhello.c b/user/testhello.c
++new file mode 100644
++index 0000000..b492d06
++--- /dev/null
+++++ b/user/testhello.c
++@@ -0,0 +1,7 @@
+++#include "kernel/types.h"
+++#include "user.h"
+++
+++int main() {
+++    hello();
+++    return 0;
+++}
++\ No newline at end of file
++diff --git a/user/trace.c b/user/trace.c
++new file mode 100644
++index 0000000..596a627
++--- /dev/null
+++++ b/user/trace.c
++@@ -0,0 +1,13 @@
+++#include "kernel/types.h"
+++#include "user.h"
+++
+++int main(int argc, char *argv[]) {
+++    if (argc <= 2) {
+++        printf("Error: you must enter a program to be traced\n");
+++        exit(1);
+++    }
+++    trace(atoi(argv[1]));
+++    // char* new_argv[] = (argv + 2, argv + argc);
+++    exec(argv[2], argv + 2);
+++    exit(2);
+++}
++\ No newline at end of file
++diff --git a/user/user.h b/user/user.h
++index f16fe27..c0036db 100644
++--- a/user/user.h
+++++ b/user/user.h
++@@ -22,6 +22,8 @@ int getpid(void);
++ char* sbrk(int);
++ int sleep(int);
++ int uptime(void);
+++int hello(void);
+++int trace(int);
++ 
++ // ulib.c
++ int stat(const char*, struct stat*);
++diff --git a/user/usertests.c b/user/usertests.c
++index 28b53f9..e215b90 100644
++--- a/user/usertests.c
+++++ b/user/usertests.c
++@@ -244,7 +244,7 @@ copyinstr3(char *s)
++ // See if the kernel refuses to read/write user memory that the
++ // application doesn't have anymore, because it returned it.
++ void
++-rwsbrk()
+++rwsbrk(char *)
++ {
++   int fd, n;
++   
++@@ -2344,7 +2344,8 @@ void
++ fsfull()
++ {
++   int nfiles;
++-  int fsblocks = 0;
+++  // int fsblocks = 0;
+++  int fsblocks __attribute__((unused)) = 0;
++ 
++   printf("fsfull test\n");
++ 
++diff --git a/user/usys.pl b/user/usys.pl
++index 01e426e..2277909 100755
++--- a/user/usys.pl
+++++ b/user/usys.pl
++@@ -36,3 +36,5 @@ entry("getpid");
++ entry("sbrk");
++ entry("sleep");
++ entry("uptime");
+++entry("hello");
+++entry("trace");
+diff --git a/user/testhello.c b/user/testhello.c
+new file mode 100644
+index 0000000..b492d06
+--- /dev/null
++++ b/user/testhello.c
+@@ -0,0 +1,7 @@
++#include "kernel/types.h"
++#include "user.h"
++
++int main() {
++    hello();
++    return 0;
++}
+\ No newline at end of file
+diff --git a/user/trace.c b/user/trace.c
+new file mode 100644
+index 0000000..596a627
+--- /dev/null
++++ b/user/trace.c
+@@ -0,0 +1,13 @@
++#include "kernel/types.h"
++#include "user.h"
++
++int main(int argc, char *argv[]) {
++    if (argc <= 2) {
++        printf("Error: you must enter a program to be traced\n");
++        exit(1);
++    }
++    trace(atoi(argv[1]));
++    // char* new_argv[] = (argv + 2, argv + argc);
++    exec(argv[2], argv + 2);
++    exit(2);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index f16fe27..c0036db 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int hello(void);
++int trace(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usertests.c b/user/usertests.c
+index 28b53f9..e215b90 100644
+--- a/user/usertests.c
++++ b/user/usertests.c
+@@ -244,7 +244,7 @@ copyinstr3(char *s)
+ // See if the kernel refuses to read/write user memory that the
+ // application doesn't have anymore, because it returned it.
+ void
+-rwsbrk()
++rwsbrk(char *)
+ {
+   int fd, n;
+   
+@@ -2344,7 +2344,8 @@ void
+ fsfull()
+ {
+   int nfiles;
+-  int fsblocks = 0;
++  // int fsblocks = 0;
++  int fsblocks __attribute__((unused)) = 0;
+ 
+   printf("fsfull test\n");
+ 
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..2277909 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("hello");
++entry("trace");
