@@ -12,17 +12,129 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 struct devsw devsw[NDEV];
+extern struct proc proc[NPROC];
+extern struct spinlock wait_lock;
 struct {
   struct spinlock lock;
   struct file file[NFILE];
 } ftable;
+static struct spinlock sysinfo_lock;
+static struct sysinfo sysinfo_data;
+static struct file *sysinfo_files[NFILE];
+static int sysinfo_file_refs[NFILE];
 
 void
 fileinit(void)
 {
   initlock(&ftable.lock, "ftable");
+  initlock(&sysinfo_lock, "sysinfo");
+}
+
+static int
+sysinfo_file_index(struct file *f)
+{
+  int i;
+
+  for(i = 0; i < sysinfo_data.file_count; i++)
+    if(sysinfo_files[i] == f)
+      return i;
+  return -1;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  int i, j, fd, index, parent_pid, release_count;
+  uint64 addr;
+  struct proc *p, *parent;
+  struct file *f;
+  struct file *release_files[NFILE];
+  struct sysinfo_proc *pi;
+  struct sysinfo_file *fi;
+  int result;
+
+  argaddr(0, &addr);
+  acquire(&sysinfo_lock);
+  memset(&sysinfo_data, 0, sizeof(sysinfo_data));
+  memset(sysinfo_files, 0, sizeof(sysinfo_files));
+  memset(sysinfo_file_refs, 0, sizeof(sysinfo_file_refs));
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&wait_lock);
+    acquire(&p->lock);
+    if(p->state == UNUSED){
+      release(&p->lock);
+      release(&wait_lock);
+      continue;
+    }
+
+    pi = &sysinfo_data.procs[sysinfo_data.proc_count++];
+    pi->pid = p->pid;
+    pi->state = p->state;
+    pi->sched_count = p->sched_count;
+    parent = p->parent;
+    for(fd = 0; fd < NOFILE; fd++){
+      pi->open_files[fd] = -1;
+      f = p->ofile[fd];
+      if(f == 0)
+        continue;
+      index = sysinfo_file_index(f);
+      if(index < 0){
+        index = sysinfo_data.file_count++;
+        sysinfo_files[index] = filedup(f);
+        sysinfo_file_refs[index] = 1;
+      }
+      pi->open_files[fd] = index;
+      fi = &sysinfo_data.files[index];
+      for(j = 0; j < fi->pid_count; j++)
+        if(fi->pids[j] == p->pid)
+          break;
+      if(j == fi->pid_count)
+        fi->pids[fi->pid_count++] = p->pid;
+    }
+    release(&p->lock);
+    parent_pid = 0;
+    if(parent){
+      acquire(&parent->lock);
+      parent_pid = parent->pid;
+      release(&parent->lock);
+    }
+    pi->parent_pid = parent_pid;
+    release(&wait_lock);
+  }
+
+  acquire(&ftable.lock);
+  for(f = ftable.file; f < ftable.file + NFILE; f++){
+    if(f->ref == 0)
+      continue;
+    index = sysinfo_file_index(f);
+    if(index < 0){
+      index = sysinfo_data.file_count++;
+      sysinfo_files[index] = f;
+      f->ref++;
+      sysinfo_file_refs[index] = 1;
+    }
+    fi = &sysinfo_data.files[index];
+    fi->type = f->type;
+    fi->mode = (f->readable ? SYSINFO_READABLE : 0) |
+               (f->writable ? SYSINFO_WRITABLE : 0);
+    fi->ref = f->ref - sysinfo_file_refs[index];
+  }
+  release(&ftable.lock);
+
+  release_count = sysinfo_data.file_count;
+  for(i = 0; i < release_count; i++)
+    release_files[i] = sysinfo_files[i];
+
+  result = copyout(myproc()->pagetable, addr, (char *)&sysinfo_data,
+                   sizeof(sysinfo_data));
+  release(&sysinfo_lock);
+  for(i = 0; i < release_count; i++)
+    fileclose(release_files[i]);
+  return result < 0 ? -1 : 0;
 }
 
 // Allocate a file structure.
@@ -179,4 +291,3 @@ filewrite(struct file *f, uint64 addr, int n)
 
   return ret;
 }
-
